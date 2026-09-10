@@ -2,8 +2,18 @@ import { Client, GatewayIntentBits, SlashCommandBuilder, REST, Routes, EmbedBuil
 import cron from 'node-cron';
 import fs from 'fs';
 import dotenv from 'dotenv';
+import http from 'http';
 
 dotenv.config();
+
+// Keep-alive HTTP server for Render Free Tier
+const port = process.env.PORT || 3000;
+http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('Daily Bugle Bot is running 24/7!\n');
+}).listen(port, () => {
+  console.log(`🌐 Web server listening on port ${port}`);
+});
 
 const client = new Client({
   intents: [
@@ -84,7 +94,7 @@ client.once('clientReady', async () => {
       Routes.applicationCommands(client.user.id),
       { body: commands }
     );
-    console.log('Successfully updated slash commands (test command removed)!');
+    console.log('Successfully updated slash commands!');
   } catch (err) {
     console.error('Error registering slash commands:', err);
   }
