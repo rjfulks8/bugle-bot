@@ -1,4 +1,15 @@
-import { Client, GatewayIntentBits, SlashCommandBuilder, REST, Routes, EmbedBuilder } from 'discord.js';
+import { 
+  Client, 
+  GatewayIntentBits, 
+  SlashCommandBuilder, 
+  REST, 
+  Routes, 
+  EmbedBuilder, 
+  ButtonBuilder, 
+  ButtonStyle, 
+  ActionRowBuilder, 
+  ComponentType 
+} from 'discord.js';
 import cron from 'node-cron';
 import fs from 'fs';
 import dotenv from 'dotenv';
@@ -143,7 +154,7 @@ client.on('interactionCreate', async (interaction) => {
     });
   }
 
-  // --- /bugle-gallery ---
+  // --- /bugle-gallery WITH BUTTON PAGINATION ---
   if (interaction.commandName === 'bugle-gallery') {
     const todaysSubmissions = submissions.filter(s => s.date === todayKey);
 
@@ -154,14 +165,73 @@ client.on('interactionCreate', async (interaction) => {
       });
     }
 
-    const latest = todaysSubmissions[todaysSubmissions.length - 1];
-    const embed = new EmbedBuilder()
-      .setTitle(`📸 Today's Bugle Submissions (${todaysSubmissions.length} Total)`)
-      .setDescription(`Latest submission by <@${latest.userId}>`)
-      .setImage(latest.imageUrl)
-      .setColor('#0099FF');
+    let currentIndex = 0;
 
-    return interaction.reply({ embeds: [embed] });
+    // Helper function to build embed for a specific page index
+    const generateEmbed = (index) => {
+      const item = todaysSubmissions[index];
+      return new EmbedBuilder()
+        .setTitle(`📸 Today's Bugle Submissions (${index + 1} of ${todaysSubmissions.length})`)
+        .setDescription(`Submitted by <@${item.userId}> (${item.username})`)
+        .setImage(item.imageUrl)
+        .setColor('#0099FF')
+        .setFooter({ text: `Use buttons below to flip through photos` });
+    };
+
+    // Helper function to build row with Previous and Next buttons
+    const generateButtons = (index) => {
+      const prevButton = new ButtonBuilder()
+        .setCustomId('prev_photo')
+        .setLabel('◀ Previous')
+        .setStyle(ButtonStyle.Primary)
+        .setDisabled(index === 0);
+
+      const nextButton = new ButtonBuilder()
+        .setCustomId('next_photo')
+        .setLabel('Next ▶')
+        .setStyle(ButtonStyle.Primary)
+        .setDisabled(index === todaysSubmissions.length - 1);
+
+      return new ActionRowBuilder().addComponents(prevButton, nextButton);
+    };
+
+    // Send initial gallery response
+    const response = await interaction.reply({
+      embeds: [generateEmbed(currentIndex)],
+      components: todaysSubmissions.length > 1 ? [generateButtons(currentIndex)] : [],
+      fetchReply: true
+    });
+
+    // If there's only 1 photo, no need to set up button listeners
+    if (todaysSubmissions.length <= 1) return;
+
+    // Create collector for button interactions (active for 5 minutes)
+    const collector = response.createMessageComponentCollector({
+      componentType: ComponentType.Button,
+      time: 300000 
+    });
+
+    collector.on('collect', async (btnInteraction) => {
+      if (btnInteraction.customId === 'prev_photo' && currentIndex > 0) {
+        currentIndex--;
+      } else if (btnInteraction.customId === 'next_photo' && currentIndex < todaysSubmissions.length - 1) {
+        currentIndex++;
+      }
+
+      await btnInteraction.update({
+        embeds: [generateEmbed(currentIndex)],
+        components: [generateButtons(currentIndex)]
+      });
+    });
+
+    // Disable buttons when the 5-minute timeout expires
+    collector.on('end', async () => {
+      const disabledRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId('prev_disabled').setLabel('◀ Previous').setStyle(ButtonStyle.Primary).setDisabled(true),
+        new ButtonBuilder().setCustomId('next_disabled').setLabel('Next ▶').setStyle(ButtonStyle.Primary).setDisabled(true)
+      );
+      await interaction.editReply({ components: [disabledRow] }).catch(() => {});
+    });
   }
 });
 
