@@ -43,6 +43,10 @@ if (fs.existsSync('state.json')) {
 let submissions = [];
 if (fs.existsSync('submissions.json')) {
   submissions = JSON.parse(fs.readFileSync('submissions.json', 'utf8'));
+  // Ensure all submissions have a voters array initialized
+  submissions.forEach(sub => {
+    if (!sub.voters) sub.voters = [];
+  });
 }
 
 let assignments = [];
@@ -81,6 +85,33 @@ async function sendDailyAssignment(channel) {
   saveState();
 }
 
+async function announceDailyWinner(channel) {
+  const todayKey = getTodayKey();
+  const todaysSubmissions = submissions.filter(s => s.date === todayKey);
+
+  if (todaysSubmissions.length === 0) {
+    return channel.send("📰 **DAILY BUGLE EXTRA!** There were ZERO photos on my desk today! No front-page story tonight!");
+  }
+
+  // Sort submissions by vote count (highest first)
+  todaysSubmissions.sort((a, b) => (b.voters?.length || 0) - (a.voters?.length || 0));
+
+  const winner = todaysSubmissions[0];
+  const voteCount = winner.voters?.length || 0;
+
+  const winnerEmbed = new EmbedBuilder()
+    .setTitle('📰 DAILY BUGLE FRONT PAGE WINNER!')
+    .setDescription(`<@${winner.userId}> good job kid, you made the front page today!\n\n**Total Votes:** ${voteCount}`)
+    .setImage(winner.imageUrl)
+    .setColor('#FFD700')
+    .setFooter({ text: `Front Page Selection for ${todayKey}` });
+
+  await channel.send({
+    content: `🚨 <@${winner.userId}> **has secured the front page!**`,
+    embeds: [winnerEmbed]
+  });
+}
+
 // Register Official Production Commands
 const commands = [
   new SlashCommandBuilder()
@@ -93,7 +124,7 @@ const commands = [
     ),
   new SlashCommandBuilder()
     .setName('bugle-gallery')
-    .setDescription("View today's submissions for J. Jonah Jameson!")
+    .setDescription("View today's submissions for J. Jonah Jameson and vote for the winner!")
 ];
 
 client.once('clientReady', async () => {
@@ -115,6 +146,13 @@ client.once('clientReady', async () => {
     console.log('⏰ Running 9 AM Daily Bugle Assignment Dispatch...');
     const targetChannel = await client.channels.fetch(process.env.ANNOUNCEMENT_CHANNEL_ID);
     if (targetChannel) await sendDailyAssignment(targetChannel);
+  });
+
+  // Scheduled 11 PM daily front-page winner announcement
+  cron.schedule('0 23 * * *', async () => {
+    console.log('🏆 Running 11 PM Daily Bugle Winner Announcement...');
+    const targetChannel = await client.channels.fetch(process.env.ANNOUNCEMENT_CHANNEL_ID);
+    if (targetChannel) await announceDailyWinner(targetChannel);
   });
 });
 
@@ -140,7 +178,8 @@ client.on('interactionCreate', async (interaction) => {
       date: todayKey,
       userId: interaction.user.id,
       username: interaction.user.username,
-      imageUrl: attachment.url
+      imageUrl: attachment.url,
+      voters: [] // Array of User IDs who voted for this submission
     });
     saveSubmissions();
 
@@ -154,7 +193,7 @@ client.on('interactionCreate', async (interaction) => {
     });
   }
 
-  // --- /bugle-gallery WITH BUTTON PAGINATION ---
+  // --- /bugle-gallery WITH VOTING & BUTTON PAGINATION ---
   if (interaction.commandName === 'bugle-gallery') {
     const todaysSubmissions = submissions.filter(s => s.date === todayKey);
 
@@ -170,21 +209,31 @@ client.on('interactionCreate', async (interaction) => {
     // Helper function to build embed for a specific page index
     const generateEmbed = (index) => {
       const item = todaysSubmissions[index];
+      const voteCount = item.voters ? item.voters.length : 0;
+
       return new EmbedBuilder()
         .setTitle(`📸 Today's Bugle Submissions (${index + 1} of ${todaysSubmissions.length})`)
-        .setDescription(`Submitted by <@${item.userId}> (${item.username})`)
+        .setDescription(`Submitted by <@${item.userId}> (${item.username})\n\n⭐ **Votes:** ${voteCount}`)
         .setImage(item.imageUrl)
         .setColor('#0099FF')
-        .setFooter({ text: `Use buttons below to flip through photos` });
+        .setFooter({ text: `Use buttons below to vote or flip through photos` });
     };
 
-    // Helper function to build row with Previous and Next buttons
-    const generateButtons = (index) => {
+    // Helper function to build row with Previous, Vote, and Next buttons
+    const generateButtons = (index, userId) => {
+      const item = todaysSubmissions[index];
+      const hasVotedThis = item.voters && item.voters.includes(userId);
+
       const prevButton = new ButtonBuilder()
         .setCustomId('prev_photo')
         .setLabel('◀ Previous')
         .setStyle(ButtonStyle.Primary)
         .setDisabled(index === 0);
+
+      const voteButton = new ButtonBuilder()
+        .setCustomId('vote_photo')
+        .setLabel(hasVotedThis ? '⭐ Voted' : '⭐ Vote for this Photo')
+        .setStyle(hasVotedThis ? ButtonStyle.Success : ButtonStyle.Secondary);
 
       const nextButton = new ButtonBuilder()
         .setCustomId('next_photo')
@@ -192,42 +241,56 @@ client.on('interactionCreate', async (interaction) => {
         .setStyle(ButtonStyle.Primary)
         .setDisabled(index === todaysSubmissions.length - 1);
 
-      return new ActionRowBuilder().addComponents(prevButton, nextButton);
+      return new ActionRowBuilder().addComponents(prevButton, voteButton, nextButton);
     };
 
     // Send initial gallery response
     const response = await interaction.reply({
       embeds: [generateEmbed(currentIndex)],
-      components: todaysSubmissions.length > 1 ? [generateButtons(currentIndex)] : [],
+      components: [generateButtons(currentIndex, interaction.user.id)],
       fetchReply: true
     });
 
-    // If there's only 1 photo, no need to set up button listeners
-    if (todaysSubmissions.length <= 1) return;
-
-    // Create collector for button interactions (active for 5 minutes)
+    // Create collector for button interactions (active for 15 minutes)
     const collector = response.createMessageComponentCollector({
       componentType: ComponentType.Button,
-      time: 300000 
+      time: 900000 
     });
 
     collector.on('collect', async (btnInteraction) => {
+      const voterId = btnInteraction.user.id;
+
       if (btnInteraction.customId === 'prev_photo' && currentIndex > 0) {
         currentIndex--;
       } else if (btnInteraction.customId === 'next_photo' && currentIndex < todaysSubmissions.length - 1) {
         currentIndex++;
+      } else if (btnInteraction.customId === 'vote_photo') {
+        // Enforce 1 vote per person: Remove user from any other todaysSubmissions first
+        todaysSubmissions.forEach(sub => {
+          if (!sub.voters) sub.voters = [];
+          const idx = sub.voters.indexOf(voterId);
+          if (idx !== -1) sub.voters.splice(idx, 1);
+        });
+
+        // Add user vote to currently viewed photo
+        const currentItem = todaysSubmissions[currentIndex];
+        if (!currentItem.voters) currentItem.voters = [];
+        currentItem.voters.push(voterId);
+
+        saveSubmissions();
       }
 
       await btnInteraction.update({
         embeds: [generateEmbed(currentIndex)],
-        components: [generateButtons(currentIndex)]
+        components: [generateButtons(currentIndex, voterId)]
       });
     });
 
-    // Disable buttons when the 5-minute timeout expires
+    // Disable buttons when collector expires
     collector.on('end', async () => {
       const disabledRow = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId('prev_disabled').setLabel('◀ Previous').setStyle(ButtonStyle.Primary).setDisabled(true),
+        new ButtonBuilder().setCustomId('vote_disabled').setLabel('⭐ Voting Closed').setStyle(ButtonStyle.Secondary).setDisabled(true),
         new ButtonBuilder().setCustomId('next_disabled').setLabel('Next ▶').setStyle(ButtonStyle.Primary).setDisabled(true)
       );
       await interaction.editReply({ components: [disabledRow] }).catch(() => {});
