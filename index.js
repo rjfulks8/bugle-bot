@@ -35,7 +35,7 @@ const client = new Client({
 });
 
 // Load local state files
-let state = { currentIndex: 0, startDate: null };
+let state = { startDate: "2026-08-26" };
 if (fs.existsSync('state.json')) {
   state = JSON.parse(fs.readFileSync('state.json', 'utf8'));
 }
@@ -43,7 +43,6 @@ if (fs.existsSync('state.json')) {
 let submissions = [];
 if (fs.existsSync('submissions.json')) {
   submissions = JSON.parse(fs.readFileSync('submissions.json', 'utf8'));
-  // Ensure all submissions have a voters array initialized
   submissions.forEach(sub => {
     if (!sub.voters) sub.voters = [];
   });
@@ -52,10 +51,6 @@ if (fs.existsSync('submissions.json')) {
 let assignments = [];
 if (fs.existsSync('assignments.json')) {
   assignments = JSON.parse(fs.readFileSync('assignments.json', 'utf8'));
-}
-
-function saveState() {
-  fs.writeFileSync('state.json', JSON.stringify(state, null, 2));
 }
 
 function saveSubmissions() {
@@ -70,19 +65,25 @@ function getTodayKey() {
 async function sendDailyAssignment(channel) {
   if (!assignments.length) return;
 
-  const assignmentText = assignments[state.currentIndex];
+  // Calculate day difference based on startDate to prevent resets on restart
+  const start = new Date(state.startDate || '2026-08-26');
+  const today = new Date();
+  
+  // Calculate full calendar days passed since start date
+  const diffTime = Math.abs(today - start);
+  const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+
+  // Determine current index (loops cleanly back to 0 after 100 days)
+  const currentIndex = diffDays % assignments.length;
+  const assignmentText = assignments[currentIndex];
 
   const embed = new EmbedBuilder()
     .setTitle('🚨 ATTENTION BUGLE STAFF!')
     .setDescription(`**TODAY'S ASSIGNMENT:**\n"${assignmentText}"\n\nSubmit your photo evidence using \`/submit\`!`)
     .setColor('#FF0000')
-    .setFooter({ text: `Day ${state.currentIndex + 1} of 100` });
+    .setFooter({ text: `Day ${currentIndex + 1} of 100` });
 
   await channel.send({ embeds: [embed] });
-
-  // Advance to next assignment for tomorrow (loops after 100 days)
-  state.currentIndex = (state.currentIndex + 1) % assignments.length;
-  saveState();
 }
 
 async function announceDailyWinner(channel) {
@@ -179,7 +180,7 @@ client.on('interactionCreate', async (interaction) => {
       userId: interaction.user.id,
       username: interaction.user.username,
       imageUrl: attachment.url,
-      voters: [] // Array of User IDs who voted for this submission
+      voters: []
     });
     saveSubmissions();
 
@@ -206,7 +207,6 @@ client.on('interactionCreate', async (interaction) => {
 
     let currentIndex = 0;
 
-    // Helper function to build embed for a specific page index
     const generateEmbed = (index) => {
       const item = todaysSubmissions[index];
       const voteCount = item.voters ? item.voters.length : 0;
@@ -219,7 +219,6 @@ client.on('interactionCreate', async (interaction) => {
         .setFooter({ text: `Use buttons below to vote or flip through photos` });
     };
 
-    // Helper function to build row with Previous, Vote, and Next buttons
     const generateButtons = (index, userId) => {
       const item = todaysSubmissions[index];
       const hasVotedThis = item.voters && item.voters.includes(userId);
@@ -244,14 +243,12 @@ client.on('interactionCreate', async (interaction) => {
       return new ActionRowBuilder().addComponents(prevButton, voteButton, nextButton);
     };
 
-    // Send initial gallery response
     const response = await interaction.reply({
       embeds: [generateEmbed(currentIndex)],
       components: [generateButtons(currentIndex, interaction.user.id)],
       fetchReply: true
     });
 
-    // Create collector for button interactions (active for 15 minutes)
     const collector = response.createMessageComponentCollector({
       componentType: ComponentType.Button,
       time: 900000 
@@ -265,14 +262,12 @@ client.on('interactionCreate', async (interaction) => {
       } else if (btnInteraction.customId === 'next_photo' && currentIndex < todaysSubmissions.length - 1) {
         currentIndex++;
       } else if (btnInteraction.customId === 'vote_photo') {
-        // Enforce 1 vote per person: Remove user from any other todaysSubmissions first
         todaysSubmissions.forEach(sub => {
           if (!sub.voters) sub.voters = [];
           const idx = sub.voters.indexOf(voterId);
           if (idx !== -1) sub.voters.splice(idx, 1);
         });
 
-        // Add user vote to currently viewed photo
         const currentItem = todaysSubmissions[currentIndex];
         if (!currentItem.voters) currentItem.voters = [];
         currentItem.voters.push(voterId);
@@ -286,7 +281,6 @@ client.on('interactionCreate', async (interaction) => {
       });
     });
 
-    // Disable buttons when collector expires
     collector.on('end', async () => {
       const disabledRow = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId('prev_disabled').setLabel('◀ Previous').setStyle(ButtonStyle.Primary).setDisabled(true),
