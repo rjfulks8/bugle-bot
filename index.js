@@ -35,9 +35,14 @@ const client = new Client({
 });
 
 // Load local state files
-let state = { startDate: "2026-08-26" };
+let state = { guilds: {} };
 if (fs.existsSync('state.json')) {
-  state = JSON.parse(fs.readFileSync('state.json', 'utf8'));
+  try {
+    const raw = JSON.parse(fs.readFileSync('state.json', 'utf8'));
+    if (raw.guilds) state = raw;
+  } catch (e) {
+    console.error("Error reading state.json:", e);
+  }
 }
 
 let submissions = [];
@@ -53,6 +58,10 @@ if (fs.existsSync('assignments.json')) {
   assignments = JSON.parse(fs.readFileSync('assignments.json', 'utf8'));
 }
 
+function saveState() {
+  fs.writeFileSync('state.json', JSON.stringify(state, null, 2));
+}
+
 function saveSubmissions() {
   fs.writeFileSync('submissions.json', JSON.stringify(submissions, null, 2));
 }
@@ -62,55 +71,93 @@ function getTodayKey() {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
-async function sendDailyAssignment(channel) {
-  if (!assignments.length) return;
-
-  // Calculate day difference based on startDate to prevent resets on restart
-  const start = new Date(state.startDate || '2026-08-26');
-  const today = new Date();
+// Helper to calculate specific server's Day index based on its startDate
+function getGuildDayIndex(startDateStr) {
+  if (!assignments.length) return 0;
   
-  // Calculate full calendar days passed since start date
-  const diffTime = Math.abs(today - start);
-  const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+  const [sYear, sMonth, sDay] = startDateStr.split('-').map(Number);
+  const startDate = Date.UTC(sYear, sMonth - 1, sDay);
 
-  // Determine current index (loops cleanly back to 0 after 100 days)
-  const currentIndex = diffDays % assignments.length;
-  const assignmentText = assignments[currentIndex];
+  const now = new Date();
+  const todayDate = Date.UTC(now.getFullYear(), now.getMonth(), now.getDate());
 
-  const embed = new EmbedBuilder()
-    .setTitle('🚨 ATTENTION BUGLE STAFF!')
-    .setDescription(`**TODAY'S ASSIGNMENT:**\n"${assignmentText}"\n\nSubmit your photo evidence using \`/submit\`!`)
-    .setColor('#FF0000')
-    .setFooter({ text: `Day ${currentIndex + 1} of 100` });
-
-  await channel.send({ embeds: [embed] });
+  const diffDays = Math.floor((todayDate - startDate) / (1000 * 60 * 60 * 24));
+  return ((diffDays % assignments.length) + assignments.length) % assignments.length;
 }
 
-async function announceDailyWinner(channel) {
-  const todayKey = getTodayKey();
-  const todaysSubmissions = submissions.filter(s => s.date === todayKey);
+// Auto-register guild if not present
+function ensureGuildRegistered(guildId, channelId = null) {
+  if (!state.guilds) state.guilds = {};
 
-  if (todaysSubmissions.length === 0) {
-    return channel.send("📰 **DAILY BUGLE EXTRA!** There were ZERO photos on my desk today! No front-page story tonight!");
+  if (!state.guilds[guildId]) {
+    state.guilds[guildId] = {
+      startDate: getTodayKey(), // Default new servers to start today
+      announcementChannelId: channelId || process.env.ANNOUNCEMENT_CHANNEL_ID
+    };
+    saveState();
+  } else if (channelId && !state.guilds[guildId].announcementChannelId) {
+    state.guilds[guildId].announcementChannelId = channelId;
+    saveState();
   }
+}
 
-  // Sort submissions by vote count (highest first)
-  todaysSubmissions.sort((a, b) => (b.voters?.length || 0) - (a.voters?.length || 0));
+async function sendDailyAssignmentForGuild(guildId) {
+  const guildData = state.guilds[guildId];
+  if (!guildData || !guildData.announcementChannelId) return;
 
-  const winner = todaysSubmissions[0];
-  const voteCount = winner.voters?.length || 0;
+  try {
+    const channel = await client.channels.fetch(guildData.announcementChannelId);
+    if (!channel) return;
 
-  const winnerEmbed = new EmbedBuilder()
-    .setTitle('📰 DAILY BUGLE FRONT PAGE WINNER!')
-    .setDescription(`<@${winner.userId}> good job kid, you made the front page today!\n\n**Total Votes:** ${voteCount}`)
-    .setImage(winner.imageUrl)
-    .setColor('#FFD700')
-    .setFooter({ text: `Front Page Selection for ${todayKey}` });
+    const currentIndex = getGuildDayIndex(guildData.startDate);
+    const assignmentText = assignments[currentIndex];
 
-  await channel.send({
-    content: `🚨 <@${winner.userId}> **has secured the front page!**`,
-    embeds: [winnerEmbed]
-  });
+    const embed = new EmbedBuilder()
+      .setTitle('🚨 ATTENTION BUGLE STAFF!')
+      .setDescription(`**TODAY'S ASSIGNMENT:**\n"${assignmentText}"\n\nSubmit your photo evidence using \`/submit\`!`)
+      .setColor('#FF0000')
+      .setFooter({ text: `Day ${currentIndex + 1} of 100` });
+
+    await channel.send({ embeds: [embed] });
+  } catch (err) {
+    console.error(`Error sending assignment to guild ${guildId}:`, err);
+  }
+}
+
+async function announceDailyWinnerForGuild(guildId) {
+  const guildData = state.guilds[guildId];
+  if (!guildData || !guildData.announcementChannelId) return;
+
+  try {
+    const channel = await client.channels.fetch(guildData.announcementChannelId);
+    if (!channel) return;
+
+    const todayKey = getTodayKey();
+    const todaysSubmissions = submissions.filter(s => s.date === todayKey && s.guildId === guildId);
+
+    if (todaysSubmissions.length === 0) {
+      return channel.send("📰 **DAILY BUGLE EXTRA!** There were ZERO photos on my desk today! No front-page story tonight!");
+    }
+
+    todaysSubmissions.sort((a, b) => (b.voters?.length || 0) - (a.voters?.length || 0));
+
+    const winner = todaysSubmissions[0];
+    const voteCount = winner.voters?.length || 0;
+
+    const winnerEmbed = new EmbedBuilder()
+      .setTitle('📰 DAILY BUGLE FRONT PAGE WINNER!')
+      .setDescription(`<@${winner.userId}> good job kid, you made the front page today!\n\n**Total Votes:** ${voteCount}`)
+      .setImage(winner.imageUrl)
+      .setColor('#FFD700')
+      .setFooter({ text: `Front Page Selection for ${todayKey}` });
+
+    await channel.send({
+      content: `🚨 <@${winner.userId}> **has secured the front page!**`,
+      embeds: [winnerEmbed]
+    });
+  } catch (err) {
+    console.error(`Error announcing winner for guild ${guildId}:`, err);
+  }
 }
 
 // Register Official Production Commands
@@ -142,24 +189,40 @@ client.once('clientReady', async () => {
     console.error('Error registering slash commands:', err);
   }
 
-  // Scheduled 9 AM daily dispatch
-  cron.schedule('0 9 * * *', async () => {
-    console.log('⏰ Running 9 AM Daily Bugle Assignment Dispatch...');
-    const targetChannel = await client.channels.fetch(process.env.ANNOUNCEMENT_CHANNEL_ID);
-    if (targetChannel) await sendDailyAssignment(targetChannel);
+  // Pre-register active servers on launch
+  client.guilds.cache.forEach(guild => {
+    ensureGuildRegistered(guild.id, process.env.ANNOUNCEMENT_CHANNEL_ID);
   });
 
-  // Scheduled 11 PM daily front-page winner announcement
-  cron.schedule('0 23 * * *', async () => {
-    console.log('🏆 Running 11 PM Daily Bugle Winner Announcement...');
-    const targetChannel = await client.channels.fetch(process.env.ANNOUNCEMENT_CHANNEL_ID);
-    if (targetChannel) await announceDailyWinner(targetChannel);
+  // Scheduled 9 AM daily dispatch for all registered servers
+  cron.schedule('0 9 * * *', async () => {
+    console.log('⏰ Running 9 AM Daily Bugle Assignment Dispatch across all servers...');
+    for (const guildId of Object.keys(state.guilds)) {
+      await sendDailyAssignmentForGuild(guildId);
+    }
   });
+
+  // Scheduled 11 PM daily winner announcement for all registered servers
+  cron.schedule('0 23 * * *', async () => {
+    console.log('🏆 Running 11 PM Daily Bugle Winner Announcement across all servers...');
+    for (const guildId of Object.keys(state.guilds)) {
+      await announceDailyWinnerForGuild(guildId);
+    }
+  });
+});
+
+// Auto-register new server on join
+client.on('guildCreate', (guild) => {
+  console.log(`Joined new server: ${guild.name} (${guild.id})`);
+  ensureGuildRegistered(guild.id);
 });
 
 // Handle Slash Command Interactions
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
+
+  const guildId = interaction.guildId;
+  ensureGuildRegistered(guildId, interaction.channelId);
 
   const todayKey = getTodayKey();
 
@@ -176,6 +239,7 @@ client.on('interactionCreate', async (interaction) => {
 
     submissions.push({
       id: Date.now(),
+      guildId: guildId,
       date: todayKey,
       userId: interaction.user.id,
       username: interaction.user.username,
@@ -196,7 +260,7 @@ client.on('interactionCreate', async (interaction) => {
 
   // --- /bugle-gallery WITH VOTING & BUTTON PAGINATION ---
   if (interaction.commandName === 'bugle-gallery') {
-    const todaysSubmissions = submissions.filter(s => s.date === todayKey);
+    const todaysSubmissions = submissions.filter(s => s.date === todayKey && s.guildId === guildId);
 
     if (todaysSubmissions.length === 0) {
       return interaction.reply({
