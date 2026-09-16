@@ -153,20 +153,22 @@ async function announceDailyWinnerForGuild(guildId) {
     }
 
     const todayKey = getTodayKey();
-    const todaysSubmissions = submissions.filter(s => s.date === todayKey && s.guildId === guildId);
+    
+    // STRICT FILTER: Match date AND exact string representation of guildId
+    const todaysSubmissions = submissions.filter(s => s.date === todayKey && String(s.guildId) === String(guildId));
 
     if (todaysSubmissions.length === 0) {
       return channel.send("📰 **DAILY BUGLE EXTRA!** There were ZERO photos on my desk today! No front-page story tonight!").catch(() => {});
     }
 
-    // Determine highest vote count across all entries
+    // Determine highest vote count across this server's entries only
     const maxVotes = Math.max(...todaysSubmissions.map(s => s.voters?.length || 0));
     
-    // Get all submissions that achieved the highest vote count
+    // Filter only submissions from THIS server that achieved maxVotes
     const topSubmissions = todaysSubmissions.filter(s => (s.voters?.length || 0) === maxVotes);
 
     if (topSubmissions.length > 1) {
-      // Co-winners Tie Scenario
+      // Co-winners Tie Scenario for this server
       const winnerTags = topSubmissions.map(s => `<@${s.userId}>`).join(' and ');
       
       const winnerEmbed = new EmbedBuilder()
@@ -181,7 +183,7 @@ async function announceDailyWinnerForGuild(guildId) {
         embeds: [winnerEmbed]
       }).catch(err => console.error(`Failed to send tie announcement to guild ${guildId}:`, err));
     } else {
-      // Single Clear Winner
+      // Single Clear Winner for this server
       const winner = topSubmissions[0];
       const voteCount = winner.voters?.length || 0;
 
@@ -292,13 +294,13 @@ client.on('interactionCreate', async (interaction) => {
     if (!attachment.contentType?.startsWith('image/')) {
       return interaction.reply({
         content: "JJJ only accepts IMAGES! Don't waste my time with non-image files!",
-        flags: 64 // Modern non-deprecated ephemeral flag replacement
+        flags: 64
       });
     }
 
     submissions.push({
       id: Date.now(),
-      guildId: guildId,
+      guildId: String(guildId),
       date: todayKey,
       userId: interaction.user.id,
       username: interaction.user.username,
@@ -312,7 +314,6 @@ client.on('interactionCreate', async (interaction) => {
       flags: 64
     });
 
-    // Safely attempt channel post without breaking execution on missing channel
     if (interaction.channel) {
       await interaction.channel.send({
         content: `📰 <@${interaction.user.id}> just submitted a photo for today's assignment!`
@@ -322,7 +323,7 @@ client.on('interactionCreate', async (interaction) => {
 
   // --- /bugle-gallery WITH VOTING & BUTTON PAGINATION ---
   if (interaction.commandName === 'bugle-gallery') {
-    const todaysSubmissions = submissions.filter(s => s.date === todayKey && s.guildId === guildId);
+    const todaysSubmissions = submissions.filter(s => s.date === todayKey && String(s.guildId) === String(guildId));
 
     if (todaysSubmissions.length === 0) {
       return interaction.reply({
