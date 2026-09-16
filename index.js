@@ -221,10 +221,7 @@ const commands = [
     ),
   new SlashCommandBuilder()
     .setName('bugle-gallery')
-    .setDescription("View today's submissions for J. Jonah Jameson and vote for the winner!"),
-  new SlashCommandBuilder()
-    .setName('test-dispatch')
-    .setDescription("Force trigger the daily assignment dispatch across all registered servers!")
+    .setDescription("View today's submissions for J. Jonah Jameson and vote for the winner!")
 ];
 
 client.once('clientReady', async () => {
@@ -275,17 +272,6 @@ client.on('interactionCreate', async (interaction) => {
   ensureGuildRegistered(guildId, interaction.channelId);
 
   const todayKey = getTodayKey();
-
-  if (interaction.commandName === 'test-dispatch') {
-    await interaction.reply({
-      content: '⚡ Force triggering daily assignment dispatch across all servers...',
-      flags: 64
-    });
-
-    for (const id of Object.keys(state.guilds)) {
-      await sendDailyAssignmentForGuild(id);
-    }
-  }
 
   if (interaction.commandName === 'submit') {
     const attachment = interaction.options.getAttachment('photo');
