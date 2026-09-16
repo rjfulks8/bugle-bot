@@ -99,17 +99,17 @@ function getGuildDayIndex(startDateStr) {
   return ((diffDays % assignments.length) + assignments.length) % assignments.length;
 }
 
-// Auto-register guild if not present
+// Auto-register guild safely without hardcoding fallbacks
 function ensureGuildRegistered(guildId, channelId = null) {
   if (!state.guilds) state.guilds = {};
 
   if (!state.guilds[guildId]) {
     state.guilds[guildId] = {
       startDate: getTodayKey(),
-      announcementChannelId: channelId || process.env.ANNOUNCEMENT_CHANNEL_ID || null
+      announcementChannelId: channelId || null
     };
     saveState();
-  } else if (channelId && !state.guilds[guildId].announcementChannelId) {
+  } else if (channelId && state.guilds[guildId].announcementChannelId !== channelId) {
     state.guilds[guildId].announcementChannelId = channelId;
     saveState();
   }
@@ -122,7 +122,7 @@ async function sendDailyAssignmentForGuild(guildId) {
   try {
     const channel = await client.channels.fetch(guildData.announcementChannelId).catch(() => null);
     if (!channel) {
-      console.log(`Skipping assignment dispatch for Guild ${guildId}: Channel not found.`);
+      console.log(`Skipping assignment dispatch for Guild ${guildId}: Channel ${guildData.announcementChannelId} not found.`);
       return;
     }
 
@@ -161,14 +161,10 @@ async function announceDailyWinnerForGuild(guildId) {
       return channel.send("📰 **DAILY BUGLE EXTRA!** There were ZERO photos on my desk today! No front-page story tonight!").catch(() => {});
     }
 
-    // Determine highest vote count across this server's entries only
     const maxVotes = Math.max(...todaysSubmissions.map(s => s.voters?.length || 0));
-    
-    // Filter only submissions from THIS server that achieved maxVotes
     const topSubmissions = todaysSubmissions.filter(s => (s.voters?.length || 0) === maxVotes);
 
     if (topSubmissions.length > 1) {
-      // Co-winners Tie Scenario for this server
       const winnerTags = topSubmissions.map(s => `<@${s.userId}>`).join(' and ');
       
       const winnerEmbed = new EmbedBuilder()
@@ -183,7 +179,6 @@ async function announceDailyWinnerForGuild(guildId) {
         embeds: [winnerEmbed]
       }).catch(err => console.error(`Failed to send tie announcement to guild ${guildId}:`, err));
     } else {
-      // Single Clear Winner for this server
       const winner = topSubmissions[0];
       const voteCount = winner.voters?.length || 0;
 
@@ -204,7 +199,6 @@ async function announceDailyWinnerForGuild(guildId) {
   }
 }
 
-// Clean up old submissions at midnight
 function cleanupOldSubmissions() {
   const yesterdayKey = getYesterdayKey();
   const initialLength = submissions.length;
@@ -216,7 +210,6 @@ function cleanupOldSubmissions() {
   console.log(`🧹 Midnight Cleanup: Purged ${removedCount} submission(s) from ${yesterdayKey}.`);
 }
 
-// Register Commands
 const commands = [
   new SlashCommandBuilder()
     .setName('submit')
@@ -245,12 +238,7 @@ client.once('clientReady', async () => {
     console.error('Error registering slash commands:', err);
   }
 
-  // Pre-register active servers on launch
-  client.guilds.cache.forEach(guild => {
-    ensureGuildRegistered(guild.id, process.env.ANNOUNCEMENT_CHANNEL_ID || null);
-  });
-
-  // Scheduled 9 AM daily dispatch across all registered servers
+  // 9 AM Daily Assignment Dispatch
   cron.schedule('0 9 * * *', async () => {
     console.log('⏰ Running 9 AM Daily Bugle Assignment Dispatch across all servers...');
     for (const guildId of Object.keys(state.guilds)) {
@@ -258,7 +246,7 @@ client.once('clientReady', async () => {
     }
   });
 
-  // Scheduled 11 PM daily winner announcement across all registered servers
+  // 11 PM Winner Announcement
   cron.schedule('0 23 * * *', async () => {
     console.log('🏆 Running 11 PM Daily Bugle Winner Announcement across all servers...');
     for (const guildId of Object.keys(state.guilds)) {
@@ -266,19 +254,17 @@ client.once('clientReady', async () => {
     }
   });
 
-  // Scheduled 12 AM (Midnight) daily submission cleanup
+  // 12 AM Cleanup
   cron.schedule('0 0 * * *', () => {
     cleanupOldSubmissions();
   });
 });
 
-// Auto-register new server on join
 client.on('guildCreate', (guild) => {
   console.log(`Joined new server: ${guild.name} (${guild.id})`);
   ensureGuildRegistered(guild.id);
 });
 
-// Handle Slash Command Interactions
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
@@ -287,7 +273,6 @@ client.on('interactionCreate', async (interaction) => {
 
   const todayKey = getTodayKey();
 
-  // --- /submit ---
   if (interaction.commandName === 'submit') {
     const attachment = interaction.options.getAttachment('photo');
 
@@ -321,7 +306,6 @@ client.on('interactionCreate', async (interaction) => {
     }
   }
 
-  // --- /bugle-gallery WITH VOTING & BUTTON PAGINATION ---
   if (interaction.commandName === 'bugle-gallery') {
     const todaysSubmissions = submissions.filter(s => s.date === todayKey && String(s.guildId) === String(guildId));
 
